@@ -21,8 +21,9 @@ st.title("요양기관 소재지 기준 폐렴 환자 대시보드")
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.header("데이터 선택")
-    geo_path = "bnd_sigungu_2024_4326.geojson"
     st.divider()
+
+geo_path = "bnd_sigungu_2024_4326.geojson"
 
 # 폐렴 데이터 CSV 경로 지정 (앞에서 저장한 파일)
 data_file = "pneumonia_data.csv"
@@ -308,6 +309,7 @@ with tab_corr:
 # ─────────────────────────────────────────────
 st.caption("ⓒ Respiratory Rehab / Pneumonia Insights — 권역은 요양기관 소재지 기준, "
            "권역 막대그래프는 시도수 보정(시도당 평균) 후 100% 정규화한 비율을 사용합니다.")
+
 
 
 
