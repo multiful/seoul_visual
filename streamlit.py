@@ -24,7 +24,6 @@ with st.sidebar:
     st.caption("반드시 아래 컬럼이 있어야 합니다.\n"
                "- 요양기관소재지 (1~5 코드)\n- 성별 (1/2 또는 남/여)\n"
                "선택: (있으면 자동 활용) 나이/연령, 요양기관종별\n")
-    data_file = st.file_uploader("폐렴 데이터(.csv)", type=["csv"])
     geo_path = st.text_input("행정구역 GeoJSON 경로", "bnd_sigungu_2024_4326.geojson")
     st.divider()
 
@@ -300,3 +299,4 @@ with tab_corr:
 # ─────────────────────────────────────────────
 st.caption("ⓒ Respiratory Rehab / Pneumonia Insights — 권역은 요양기관 소재지 기준, "
            "권역 막대그래프는 시도수 보정(시도당 평균) 후 100% 정규화한 비율을 사용합니다.")
+
