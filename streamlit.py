@@ -14,7 +14,7 @@ import streamlit as st
 # ─────────────────────────────────────────────
 st.set_page_config(layout="wide", page_title="폐렴 환자 대시보드", page_icon="🫁")
 alt.themes.enable("dark")
-st.title("🫁 요양기관 소재지 기준 폐렴 환자 대시보드")
+st.title("요양기관 소재지 기준 폐렴 환자 대시보드")
 
 # ─────────────────────────────────────────────
 # 데이터 로딩
@@ -33,9 +33,7 @@ data_file = "pneumonia_data.csv"
 # 데이터 불러오기
 try:
     df_raw = pd.read_csv(data_file, encoding="utf-8-sig")
-    st.success("폐렴 데이터 CSV 파일을 불러왔습니다 ✅")
 except FileNotFoundError:
-    st.error("폐렴 데이터 CSV 파일을 찾을 수 없습니다. 경로를 확인하세요.")
     st.stop()
 
 # ─────────────────────────────────────────────
@@ -232,71 +230,86 @@ with tab_map:
 # 고령인구비율 상관: 파일 업로드 → 권역/시도 집계와 비교
 # ─────────────────────────────────────────────
 with tab_corr:
-    st.subheader("고령인구비율과의 관계 (선택)")
-    st.caption("시도 단위 고령인구비율 파일(예: 통계청 KOSIS) 업로드 시, "
-               "권역/시도 환자 분포와 비교 지표를 계산합니다.")
-    uploaded_xlsx = st.file_uploader("고령인구비율 엑셀(.xlsx)", type=["xlsx"])
+    st.subheader("고령인구비율과의 관계")
+    st.caption("고정된 고령인구비율 파일을 사용해 권역 표준화 비율과의 관계를 봅니다.")
 
-    if uploaded_xlsx:
-        try:
-            # 시도별(행정구역별(1)) + 최신 연도 컬럼 추출 가정
-            xls = pd.ExcelFile(uploaded_xlsx)
-            sheet = [s for s in xls.sheet_names if "데이터" in s or "data" in s.lower()]
-            sheet = sheet[0] if sheet else xls.sheet_names[0]
-            age_df = pd.read_excel(uploaded_xlsx, sheet_name=sheet)
+    # ── 0) 고정 파일 경로 지정
+    xlsx_path = "고령인구비율_시도_시_군_구__20250821041330.xlsx"  # 프로젝트 내 파일 경로
 
-            # 시도명 컬럼 추정
-            sido_col = [c for c in age_df.columns if "행정구역" in str(c)][0]
-            # 최신 연도 % 컬럼 추정 (숫자형 중 최대 연도)
-            year_cols = [c for c in age_df.columns if isinstance(c, (int, np.integer))]
-            latest_year = max(year_cols)
-            age_sido = age_df[[sido_col, latest_year]].rename(
-                columns={sido_col: "시도", latest_year: "고령인구비율(%)"}
-            )
+    try:
+        # ── 1) 최신 연도 시도별 고령인구비율 로드
+        xls = pd.ExcelFile(xlsx_path)
+        sheet = next((s for s in xls.sheet_names if "데이터" in s or "data" in s.lower()), xls.sheet_names[0])
+        age_df = pd.read_excel(xlsx_path, sheet_name=sheet)
 
-            # df에서 시도 단위가 없으므로 권역→시도 매핑으로 분산 (가중치 없이 평균)
-            REGION_TO_SIDO = {
-                "서울,인천": ["서울특별시", "인천광역시"],
-                "경기,강원": ["경기도", "강원특별자치도", "강원도"],
-                "충청권(충북, 충남, 세종, 대전)": ["충청북도", "충청남도", "세종특별자치시", "대전광역시"],
-                "전라권(전북, 전남, 광주)": ["전북특별자치도", "전라북도", "전라남도", "광주광역시"],
-                "경상권(경북, 경남, 부산, 대구, 울산, 제주)": ["경상북도", "경상남도", "부산광역시", "대구광역시", "울산광역시", "제주특별자치도"],
-            }
+        # 시도명 컬럼 추정
+        sido_col_candidates = [c for c in age_df.columns if "행정구역" in str(c)]
+        sido_col = sido_col_candidates[0] if sido_col_candidates else age_df.columns[0]
 
-            # 권역별 표준화 비율을 시도에 복제 후 시도 평균 산출
-            expand_rows = []
-            for reg, pct in std_pct.items():
-                for s in REGION_TO_SIDO.get(reg, []):
-                    expand_rows.append({"시도": s, "표준화비율(%)": pct})
-            reg_to_sido_df = pd.DataFrame(expand_rows)
+        # 숫자형 연도 컬럼 중 최댓값(최신연도)
+        year_cols = [c for c in age_df.columns if isinstance(c, (int, np.integer))]
+        latest_year = max(year_cols)
 
-            merged = pd.merge(reg_to_sido_df, age_sido, on="시도", how="inner")
-            # 시도별 평균(권역 복수 시도 매핑 보정)
-            merged = merged.groupby("시도", as_index=False).mean(numeric_only=True)
+        age_sido = age_df[[sido_col, latest_year]].rename(
+            columns={sido_col: "시도", latest_year: "고령인구비율(%)"}
+        )
 
-            st.write("미리보기")
-            st.dataframe(merged)
+        # 명칭 표준화 (특별자치도 이슈 보정)
+        age_sido["시도"] = age_sido["시도"].replace({
+            "강원도": "강원특별자치도",
+            "전라북도": "전북특별자치도"
+        })
 
-            # 산점도 + 상관계수
-            corr = merged[["표준화비율(%)", "고령인구비율(%)"]].corr().iloc[0, 1]
-            st.markdown(f"**상관계수 (권역 표준화비율 vs 시도 고령인구비율)**: `{corr:.2f}`")
+        # ── 2) (안전) 권역 표준화 비율(std_pct) 재계산
+        raw_counts = df["권역"].value_counts().reindex(VALID_REGIONS, fill_value=0)
+        std_counts = raw_counts.astype(float).div(pd.Series(REGION_SIDO_N))
+        std_pct = (std_counts / std_counts.sum() * 100)
 
-            sc = alt.Chart(merged).mark_circle(size=120).encode(
-                x=alt.X("고령인구비율(%):Q"),
-                y=alt.Y("표준화비율(%):Q"),
-                tooltip=["시도", "고령인구비율(%)", "표준화비율(%)"],
-                color=alt.value("#e74c3c")
-            )
-            reg_line = sc.transform_regression("고령인구비율(%)", "표준화비율(%)").mark_line(color="#f39c12")
-            st.altair_chart(sc + reg_line, use_container_width=True)
+        # 권역 → 시도 확장 테이블
+        REGION_TO_SIDO = {
+            "서울,인천": ["서울특별시", "인천광역시"],
+            "경기,강원": ["경기도", "강원특별자치도"],
+            "충청권(충북, 충남, 세종, 대전)": ["충청북도", "충청남도", "세종특별자치시", "대전광역시"],
+            "전라권(전북, 전남, 광주)": ["전북특별자치도", "전라남도", "광주광역시"],
+            "경상권(경북, 경남, 부산, 대구, 울산, 제주)": ["경상북도", "경상남도", "부산광역시",
+                                                   "대구광역시", "울산광역시", "제주특별자치도"],
+        }
 
-        except Exception as e:
-            st.error(f"파일 해석 중 오류: {e}")
-            st.stop()
+        expand_rows = []
+        for reg, pct in std_pct.items():
+            for s in REGION_TO_SIDO.get(reg, []):
+                expand_rows.append({"시도": s, "표준화비율(%)": pct})
+        reg_to_sido_df = pd.DataFrame(expand_rows)
+
+        # ── 3) 병합 & 시각화
+        merged = pd.merge(reg_to_sido_df, age_sido, on="시도", how="inner")
+        merged = merged.groupby("시도", as_index=False).mean(numeric_only=True)
+
+        st.write("미리보기")
+        st.dataframe(merged, use_container_width=True)
+
+        # 상관계수
+        corr = merged[["표준화비율(%)", "고령인구비율(%)"]].corr().iloc[0, 1]
+        st.markdown(f"**상관계수 (권역 표준화비율 vs 시도 고령인구비율)**: `{corr:.2f}`")
+
+        # 산점도 + 회귀선
+        sc = alt.Chart(merged).mark_circle(size=120).encode(
+            x=alt.X("고령인구비율(%):Q"),
+            y=alt.Y("표준화비율(%):Q"),
+            tooltip=["시도", "고령인구비율(%)", "표준화비율(%)"],
+            color=alt.value("#e74c3c")
+        )
+        reg_line = sc.transform_regression("고령인구비율(%)", "표준화비율(%)").mark_line(color="#f39c12")
+        st.altair_chart(sc + reg_line, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"고령인구비율 파일 처리 중 오류: {e}")
+        st.stop()
 
 # ─────────────────────────────────────────────
 # 풋노트
 # ─────────────────────────────────────────────
 st.caption("ⓒ Respiratory Rehab / Pneumonia Insights — 권역은 요양기관 소재지 기준, "
            "권역 막대그래프는 시도수 보정(시도당 평균) 후 100% 정규화한 비율을 사용합니다.")
+
 
