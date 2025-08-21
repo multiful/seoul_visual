@@ -23,9 +23,13 @@ with st.sidebar:
     st.header("데이터 선택")
     st.divider()
 
-geo_path = "bnd_sigungu_2024_4326.geojson"
+#    아래 경로 탐색 (환경에 맞게 존재하는 걸 자동 선택)
+GEO_CANDIDATES = [
+    "TL_SCCO_CTPRVN.json",
+]
+geo_path = next((p for p in GEO_CANDIDATES if st.runtime.exists(p)), GEO_CANDIDATES[0])
 
-# 폐렴 데이터 CSV 경로 지정 (앞에서 저장한 파일)
+# 폐렴 데이터 CSV 경로
 data_file = "pneumonia_data.csv"
 
 # 데이터 불러오기
@@ -178,46 +182,97 @@ with tab_gender:
 with tab_map:
     st.subheader("권역별 Choropleth — 시도수 보정 비율(%)")
 
-    # GeoJSON 로드 & 권역 매핑(시군구코드 prefix → 권역)
+    # GeoJSON(시·도) 로드
     try:
-        gdf = gpd.read_file(geo_path)  # columns: SIGUNGU_CD, SIGUNGU_NM, geometry ...
+        gdf = gpd.read_file(geo_path)  # columns: CTPRVN_CD, CTP_KOR_NM, geometry ...
     except Exception as e:
-        st.error(f"GeoJSON을 읽는 중 오류: {e}")
+        st.error(f"시·도 GeoJSON을 읽는 중 오류: {e}")
         st.stop()
 
+    # CRS 자동 보정 → EPSG:4326
+    try:
+        if gdf.crs is None:
+            xmin, ymin, xmax, ymax = gdf.total_bounds
+            if max(abs(xmin), abs(ymin), abs(xmax), abs(ymax)) > 200:  # 위경도 범위 벗어남 → 미터계로 가정
+                gdf = gdf.set_crs(epsg=5179).to_crs(epsg=4326)
+            else:
+                gdf = gdf.set_crs(epsg=4326)
+        else:
+            gdf = gdf.to_crs(epsg=4326)
+    except Exception:
+        pass
+
+    # 도형 유효화 (복잡 해안선 지역 보호: 부산/전남/충남 등)
+    try:
+        from shapely.validation import make_valid
+        gdf["geometry"] = gdf.geometry.apply(make_valid)
+    except Exception:
+        gdf["geometry"] = gdf.buffer(0)
+
+    # 멀티폴리곤 분해
+    try:
+        gdf = gdf.explode(index_parts=False)
+    except Exception:
+        gdf = gdf.explode()
+
     xmin, ymin, xmax, ymax = gdf.total_bounds
-    gdf["SIDO2"] = gdf["SIGUNGU_CD"].astype(str).str[:2]
+
+    # ⬇️ 시도 코드 → 5개 권역 매핑 (17개 시도 기준)
     CODE_TO_REGION = {
         # 서울·인천
-        "11": "서울,인천", "23": "서울,인천",
+        "11": "서울,인천", "28": "서울,인천",
         # 경기·강원
-        "31": "경기,강원", "32": "경기,강원",
+        "41": "경기,강원", "42": "경기,강원",
         # 충청권
-        "33": "충청권(충북, 충남, 세종, 대전)", "34": "충청권(충북, 충남, 세종, 대전)",
-        "29": "충청권(충북, 충남, 세종, 대전)", "25": "충청권(충북, 충남, 세종, 대전)",
+        "43": "충청권(충북, 충남, 세종, 대전)", "44": "충청권(충북, 충남, 세종, 대전)",
+        "36": "충청권(충북, 충남, 세종, 대전)", "30": "충청권(충북, 충남, 세종, 대전)",
         # 전라권
-        "35": "전라권(전북, 전남, 광주)", "36": "전라권(전북, 전남, 광주)", "24": "전라권(전북, 전남, 광주)",
+        "45": "전라권(전북, 전남, 광주)", "46": "전라권(전북, 전남, 광주)", "29": "전라권(전북, 전남, 광주)",
         # 경상권
-        "21": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "22": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
-        "26": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "37": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
-        "38": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "39": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
+        "47": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "48": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
+        "26": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "27": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
+        "31": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "50": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
     }
-    gdf["권역"] = gdf["SIDO2"].map(CODE_TO_REGION)
+    gdf["CTPRVN_CD"] = gdf["CTPRVN_CD"].astype(str).str.strip()
+    gdf["권역"] = gdf["CTPRVN_CD"].map(CODE_TO_REGION)
 
-    # 시도수 보정 비율 데이터 준비
-    std_pct_df = std_pct.reset_index()
+    # 권역 dissolve 후 표준화 비율 병합
+    std_pct_df = (
+        df["권역"].value_counts()
+        .reindex(VALID_REGIONS, fill_value=0)
+        .astype(float)
+        .div(pd.Series({
+            "서울,인천": 2,
+            "경기,강원": 2,
+            "충청권(충북, 충남, 세종, 대전)": 4,
+            "전라권(전북, 전남, 광주)": 3,
+            "경상권(경북, 경남, 부산, 대구, 울산, 제주)": 6,
+        }))
+    )
+    std_pct_df = (std_pct_df / std_pct_df.sum() * 100).round(2).reset_index()
     std_pct_df.columns = ["권역", "비율(%)"]
 
-    # 권역 dissolve 후 병합
-    region_gdf = gdf.dissolve(by="권역", as_index=False)
+    region_gdf = gdf.dissolve(by="권역", as_index=False)[["권역", "geometry"]]
     region_gdf = region_gdf.merge(std_pct_df, on="권역", how="left").fillna({"비율(%)": 0})
+    region_gdf = gpd.GeoDataFrame(region_gdf, geometry="geometry", crs=gdf.crs)
 
-    # Matplotlib로 표시
+    # 지도 시각화 (matplotlib)
     fig, ax = plt.subplots(figsize=(8, 10))
-    region_gdf.plot(ax=ax, column="비율(%)", cmap="Reds", legend=True,
-                    edgecolor="black", linewidth=0.6,
-                    legend_kwds={"shrink": 0.75, "orientation": "vertical"})
-    gdf.boundary.plot(ax=ax, color="black", linewidth=0.2, alpha=0.5)
+    region_gdf.plot(
+        ax=ax, column="비율(%)", cmap="OrRd", legend=True,
+        edgecolor="#333333", linewidth=0.6,
+        legend_kwds={"shrink": 0.75, "orientation": "vertical"}
+    )
+    gdf.boundary.plot(ax=ax, color="#444444", linewidth=0.25, alpha=0.7)
+
+    # 레이블(대표점 사용: 폴리곤 내부에 배치)
+    try:
+        for _, r in region_gdf.dropna(subset=["geometry"]).iterrows():
+            p = r["geometry"].representative_point()
+            ax.text(p.x, p.y, f"{r['비율(%)']:.1f}%", ha="center", va="center", fontsize=8, color="#1a1a1a")
+    except Exception:
+        pass
+
     ax.set_xlim(xmin, xmax); ax.set_ylim(ymin, ymax)
     ax.set_aspect("equal", adjustable="box"); ax.margins(0)
     ax.set_title("요양기관 소재지 권역별 비율(시도수 보정)", fontsize=13)
@@ -309,7 +364,3 @@ with tab_corr:
 # ─────────────────────────────────────────────
 st.caption("ⓒ Respiratory Rehab / Pneumonia Insights — 권역은 요양기관 소재지 기준, "
            "권역 막대그래프는 시도수 보정(시도당 평균) 후 100% 정규화한 비율을 사용합니다.")
-
-
-
-
