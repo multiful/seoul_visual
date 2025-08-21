@@ -155,13 +155,13 @@ with tab_gender:
         st.plotly_chart(pie, use_container_width=True)
 
     with c2:
-        # 권역 × 성별 비율(권역 내 정규화)
         cross = (
             df[df["성별_label"].notna()]
             .groupby(["권역", "성별_label"]).size()
             .groupby(level=0).apply(lambda s: s / s.sum() * 100)
             .reset_index(name="비율(%)")
         )
+
         bar = (
             alt.Chart(cross)
             .mark_bar()
@@ -175,7 +175,6 @@ with tab_gender:
             .properties(title="권역별 성별 비율(권역 내 %)", height=320)
         )
         st.altair_chart(bar, use_container_width=True)
-
 # ─────────────────────────────────────────────
 # 지도: 권역 단위 Choropleth (시도수 보정 비율 기준)
 # ─────────────────────────────────────────────
@@ -364,4 +363,5 @@ with tab_corr:
 # ─────────────────────────────────────────────
 st.caption("ⓒ Respiratory Rehab / Pneumonia Insights — 권역은 요양기관 소재지 기준, "
            "권역 막대그래프는 시도수 보정(시도당 평균) 후 100% 정규화한 비율을 사용합니다.")
+
 
