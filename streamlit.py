@@ -22,7 +22,6 @@ import streamlit as st
 st.set_page_config(layout="wide", page_title="환자 대시보드", page_icon="🫁")
 alt.themes.enable("dark")
 st.title("환자 대시보드")
-st.caption("all_df=호흡기 전체, pneumonia_data=폐렴 전체 · robust region mapping(code A/B + name + 1~5) · type-map · age/subtype filters")
 
 # ─────────────────────────────────────────────
 # 공용 유틸
@@ -522,7 +521,7 @@ else:
         )
         st.altair_chart(bar + text, use_container_width=True)
     with cT2:
-        donut = px.pie(chart_df, values=show_col, names=type_col, hole=0.5, title="요양기관 비중(요약)")
+        donut = px.pie(chart_df, values=show_col, names=type_col, hole=0.5)
         donut.update_traces(textinfo="percent+label")
         st.plotly_chart(donut, use_container_width=True)
     with st.expander("표(요양기관종별 분포)"):
