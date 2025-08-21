@@ -22,6 +22,7 @@ import streamlit as st
 st.set_page_config(layout="wide", page_title="환자 대시보드", page_icon="🫁")
 alt.themes.enable("dark")
 st.title("환자 대시보드")
+st.caption("all_df=호흡기 전체, pneumonia_data=폐렴 전체 ")
 
 # ─────────────────────────────────────────────
 # 공용 유틸
@@ -269,7 +270,7 @@ TYPE_MAP = {10: "종합병원 이상", 21: "병원", 28: "요양병원", 29: "�
 # 사이드바: 질환 필터(대/중/상세) + 폐렴 상세코드
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.header("폐렴 세부분류 필터")
+    st.header("세부분류 필터")
 
     # ICD 컬럼 자동 탐색(df_all 기준)
     main_candidates = ["주상병코드", "주상병", "주상병1", "주진단코드", "주진단"]
@@ -521,7 +522,7 @@ else:
         )
         st.altair_chart(bar + text, use_container_width=True)
     with cT2:
-        donut = px.pie(chart_df, values=show_col, names=type_col, hole=0.5)
+        donut = px.pie(chart_df, values=show_col, names=type_col, hole=0.5, title="요양기관 비중(요약)")
         donut.update_traces(textinfo="percent+label")
         st.plotly_chart(donut, use_container_width=True)
     with st.expander("표(요양기관종별 분포)"):
@@ -566,11 +567,6 @@ with c2:
             on="권역", how="left"
         ).fillna({"value": 0})
 
-        # 디버그 출력
-        st.caption(f"지도 매핑 사용 코드체계: {coverage.get('사용한_코드매핑')}, 최종커버리지={coverage.get('최종매핑_커버리지(%)')}%")
-        with st.expander("지도 디버그(매핑/커버리지/면적)"):
-            st.json(coverage)
-
         geojson_obj = json.loads(map_df.to_json())
         vmax = float(map_df["value"].max()) if len(map_df) else 0.0
         fig_map = px.choropleth(
@@ -584,8 +580,9 @@ with c2:
             labels={"value": "시도수 보정 비율(%)"},
         )
         fig_map.update_geos(fitbounds="locations", visible=False)
-        fig_map.update_layout(height=380, margin=dict(l=0, r=0, t=0, b=0),
-                              coloraxis_colorbar=dict(title="시도수 보정<br>비율(%)"))
+        fig_map.update_layout(height=420, margin=dict(l=0, r=0, t=60, b=0),
+                              coloraxis_colorbar=dict(title="시도수 보정<br>비율(%)"),
+                                  title="권역별 시도수 보정 비율(%) 지도", title_y=0.95)
         st.plotly_chart(fig_map, use_container_width=True)
     except Exception as e:
         st.warning(f"지도를 생성하는 데 문제가 발생했습니다: {e}")
