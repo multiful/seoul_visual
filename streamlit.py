@@ -159,8 +159,8 @@ with tab_gender:
         cross = (
             df[df["성별_label"].notna()]
             .groupby(["권역", "성별_label"]).size()
-            .groupby(level=0).apply(lambda x: x / x.sum() * 100)
-            .rename("비율(%)").reset_index()
+            .groupby(level=0).apply(lambda s: s / s.sum() * 100)
+            .reset_index(name="비율(%)")
         )
         bar = (
             alt.Chart(cross)
@@ -364,3 +364,4 @@ with tab_corr:
 # ─────────────────────────────────────────────
 st.caption("ⓒ Respiratory Rehab / Pneumonia Insights — 권역은 요양기관 소재지 기준, "
            "권역 막대그래프는 시도수 보정(시도당 평균) 후 100% 정규화한 비율을 사용합니다.")
+
