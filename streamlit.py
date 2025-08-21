@@ -1,4 +1,6 @@
 # app.py
+import json
+import io
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -22,16 +24,21 @@ with st.sidebar:
     st.header("데이터 선택")
     st.divider()
 
-# 시·도 GeoJSON (업로드 파일 우선)
-GEO_CANDIDATES = ["TL_SCCO_CTPRVN.json"]
+# GeoJSON(시·도) 경로
+GEO_CANDIDATES = [
+    "TL_SCCO_CTPRVN.json",                # 프로젝트에 올린 시·도 경계
+    "data/TL_SCCO_CTPRVN.json",           # 서브폴더 대안
+]
 geo_path = next((p for p in GEO_CANDIDATES if Path(p).exists()), GEO_CANDIDATES[0])
 
-# 폐렴 데이터 CSV
+# 폐렴 데이터 CSV 경로
 data_file = "pneumonia_data.csv"
+
+# 데이터 불러오기
 try:
     df_raw = pd.read_csv(data_file, encoding="utf-8-sig")
 except FileNotFoundError:
-    st.error("pneumonia_data.csv 파일을 찾을 수 없습니다.")
+    st.error(f"'{data_file}' 파일을 찾을 수 없습니다.")
     st.stop()
 
 # ─────────────────────────────────────────────
@@ -39,6 +46,7 @@ except FileNotFoundError:
 # ─────────────────────────────────────────────
 df = df_raw.copy()
 
+# 권역 매핑 (요양기관소재지: 1~5)
 REGION_MAP = {
     1: "서울,인천",
     2: "경기,강원",
@@ -48,6 +56,7 @@ REGION_MAP = {
 }
 VALID_REGIONS = list(REGION_MAP.values())
 
+# 성별 매핑
 def map_sex(s):
     s = str(s).strip()
     if s in ("1", "남", "male", "Male", "M", "m"):
@@ -60,8 +69,10 @@ df["요양기관소재지_num"] = pd.to_numeric(df["요양기관소재지"], err
 df["권역"] = df["요양기관소재지_num"].map(REGION_MAP)
 df["성별_label"] = df["성별"].map(map_sex)
 
+# 분석 대상만 남기기
 df = df[df["권역"].isin(VALID_REGIONS)].copy()
 
+# 시도수(권역별) - 표준화용
 REGION_SIDO_N = {
     "서울,인천": 2,
     "경기,강원": 2,
@@ -75,6 +86,7 @@ REGION_SIDO_N = {
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.header("필터")
+    # 선택적으로 요양기관종별, 연령 필터가 있으면 제공
     if "요양기관종별" in df.columns:
         sel_types = st.multiselect("요양기관종별", sorted(df["요양기관종별"].astype(str).unique()), [])
         if sel_types:
@@ -86,12 +98,12 @@ with st.sidebar:
     st.caption(f"현재 레코드 수: {len(df):,}")
 
 # ─────────────────────────────────────────────
-# 탭
+# 탭 구성
 # ─────────────────────────────────────────────
 tab_main, tab_gender, tab_map, tab_corr = st.tabs(["메인", "성별 분석", "지도(권역)", "고령인구비율 상관"])
 
 # ─────────────────────────────────────────────
-# 메인: 권역 표준화(시도수 보정)
+# 메인: 권역 표준화(시도수 보정) 막대그래프
 # ─────────────────────────────────────────────
 with tab_main:
     st.subheader("권역별 분포 — 시도수 보정(표준화) 기준")
@@ -100,7 +112,7 @@ with tab_main:
     std_counts = raw_counts.astype(float).div(pd.Series(REGION_SIDO_N))
     std_pct = (std_counts / std_counts.sum() * 100).round(2)
 
-    # 🔧 문제되던 곳: rename().reset_index() 금지
+    # ▼ 여기서부터 안전한 reset_index 패턴
     plot_df = std_pct.to_frame("시도수 보정 비율(%)").rename_axis("권역").reset_index()
     plot_df = plot_df.sort_values("시도수 보정 비율(%)", ascending=False)
 
@@ -126,11 +138,12 @@ with tab_main:
         st.dataframe(plot_df, use_container_width=True)
 
 # ─────────────────────────────────────────────
-# 성별 분석
+# 성별 분석: 전체 성별 비율 + 권역×성별 스플릿
 # ─────────────────────────────────────────────
 with tab_gender:
     st.subheader("성별 분포(전체) 및 권역별 성별 비교")
 
+    # 전체 성별 비율
     gender = df[df["성별_label"].notna()]["성별_label"]
     g_pct = (gender.value_counts(normalize=True) * 100).reindex(["남", "여"]).fillna(0).round(1)
     g_df = g_pct.to_frame("비율(%)").rename_axis("성별").reset_index()
@@ -144,6 +157,7 @@ with tab_gender:
         st.plotly_chart(pie, use_container_width=True)
 
     with c2:
+        # 권역 × 성별 비율(권역 내 정규화)
         cross = (
             df[df["성별_label"].notna()]
             .groupby(["권역", "성별_label"]).size()
@@ -165,7 +179,7 @@ with tab_gender:
         st.altair_chart(bar, use_container_width=True)
 
 # ─────────────────────────────────────────────
-# 지도: 권역 단위 Choropleth
+# 지도: 권역 단위 Choropleth (시도수 보정 비율 기준)
 # ─────────────────────────────────────────────
 with tab_map:
     st.subheader("권역별 Choropleth — 시도수 보정 비율(%)")
@@ -177,11 +191,11 @@ with tab_map:
         st.error(f"시·도 GeoJSON을 읽는 중 오류: {e}")
         st.stop()
 
-    # CRS → EPSG:4326
+    # CRS 자동 보정 → EPSG:4326
     try:
         if gdf.crs is None:
             xmin, ymin, xmax, ymax = gdf.total_bounds
-            if max(abs(xmin), abs(ymin), abs(xmax), abs(ymax)) > 200:
+            if max(abs(xmin), abs(ymin), abs(xmax), abs(ymax)) > 200:  # 위경도 범위 벗어남 → 미터계로 가정
                 gdf = gdf.set_crs(epsg=5179).to_crs(epsg=4326)
             else:
                 gdf = gdf.set_crs(epsg=4326)
@@ -190,7 +204,7 @@ with tab_map:
     except Exception:
         pass
 
-    # 도형 유효화
+    # 도형 유효화 (복잡 해안선 지역 보호: 부산/전남/충남 등)
     try:
         from shapely.validation import make_valid
         gdf["geometry"] = gdf.geometry.apply(make_valid)
@@ -205,12 +219,18 @@ with tab_map:
 
     xmin, ymin, xmax, ymax = gdf.total_bounds
 
+    # ⬇️ 시도 코드 → 5개 권역 매핑 (17개 시도 기준)
     CODE_TO_REGION = {
+        # 서울·인천
         "11": "서울,인천", "28": "서울,인천",
+        # 경기·강원
         "41": "경기,강원", "42": "경기,강원",
+        # 충청권
         "43": "충청권(충북, 충남, 세종, 대전)", "44": "충청권(충북, 충남, 세종, 대전)",
         "36": "충청권(충북, 충남, 세종, 대전)", "30": "충청권(충북, 충남, 세종, 대전)",
+        # 전라권
         "45": "전라권(전북, 전남, 광주)", "46": "전라권(전북, 전남, 광주)", "29": "전라권(전북, 전남, 광주)",
+        # 경상권
         "47": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "48": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
         "26": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "27": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
         "31": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "50": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
@@ -218,7 +238,7 @@ with tab_map:
     gdf["CTPRVN_CD"] = gdf["CTPRVN_CD"].astype(str).str.strip()
     gdf["권역"] = gdf["CTPRVN_CD"].map(CODE_TO_REGION)
 
-    # 표준화 비율(지도용) — 안전한 생성
+    # 권역 dissolve 후 표준화 비율 병합 (안전한 reset_index 패턴)
     std_counts_map = (
         df["권역"].value_counts()
         .reindex(VALID_REGIONS, fill_value=0)
@@ -228,12 +248,11 @@ with tab_map:
     std_pct_map = (std_counts_map / std_counts_map.sum() * 100).round(2)
     std_pct_df = std_pct_map.to_frame("비율(%)").rename_axis("권역").reset_index()
 
-    # 권역 단위 디졸브 + 병합
     region_gdf = gdf.dissolve(by="권역", as_index=False)[["권역", "geometry"]]
     region_gdf = region_gdf.merge(std_pct_df, on="권역", how="left").fillna({"비율(%)": 0})
     region_gdf = gpd.GeoDataFrame(region_gdf, geometry="geometry", crs=gdf.crs)
 
-    # 시각화
+    # 지도 시각화 (matplotlib)
     fig, ax = plt.subplots(figsize=(8, 10))
     region_gdf.plot(
         ax=ax, column="비율(%)", cmap="OrRd", legend=True,
@@ -242,7 +261,7 @@ with tab_map:
     )
     gdf.boundary.plot(ax=ax, color="#444444", linewidth=0.25, alpha=0.7)
 
-    # 라벨
+    # 레이블(대표점 사용: 폴리곤 내부에 배치)
     try:
         for _, r in region_gdf.dropna(subset=["geometry"]).iterrows():
             p = r["geometry"].representative_point()
@@ -257,61 +276,71 @@ with tab_map:
     st.pyplot(fig, use_container_width=True)
 
 # ─────────────────────────────────────────────
-# 고령인구비율 상관
+# 고령인구비율 상관: 파일 업로드 → 권역/시도 집계와 비교
 # ─────────────────────────────────────────────
 with tab_corr:
     st.subheader("고령인구비율과의 관계")
     st.caption("고정된 고령인구비율 파일을 사용해 권역 표준화 비율과의 관계를 봅니다.")
 
-    xlsx_path = "고령인구비율_시도_시_군_구__20250821041330.xlsx"
+    # ── 0) 고정 파일 경로 지정
+    xlsx_path = "고령인구비율_시도_시_군_구__20250821041330.xlsx"  # 프로젝트 내 파일 경로
+
     try:
+        # ── 1) 최신 연도 시도별 고령인구비율 로드
         xls = pd.ExcelFile(xlsx_path)
         sheet = next((s for s in xls.sheet_names if "데이터" in s or "data" in s.lower()), xls.sheet_names[0])
         age_df = pd.read_excel(xlsx_path, sheet_name=sheet)
 
+        # 시도명 컬럼 추정
         sido_col_candidates = [c for c in age_df.columns if "행정구역" in str(c)]
         sido_col = sido_col_candidates[0] if sido_col_candidates else age_df.columns[0]
 
+        # 숫자형 연도 컬럼 중 최댓값(최신연도)
         year_cols = [c for c in age_df.columns if isinstance(c, (int, np.integer))]
         latest_year = max(year_cols)
 
         age_sido = age_df[[sido_col, latest_year]].rename(
             columns={sido_col: "시도", latest_year: "고령인구비율(%)"}
         )
+
+        # 명칭 표준화 (특별자치도 이슈 보정)
         age_sido["시도"] = age_sido["시도"].replace({
             "강원도": "강원특별자치도",
             "전라북도": "전북특별자치도"
         })
 
-        raw_counts2 = df["권역"].value_counts().reindex(VALID_REGIONS, fill_value=0)
-        std_counts2 = raw_counts2.astype(float).div(pd.Series(REGION_SIDO_N))
-        std_pct2 = (std_counts2 / std_counts2.sum() * 100)
+        # ── 2) (안전) 권역 표준화 비율(std_pct) 재계산
+        raw_counts = df["권역"].value_counts().reindex(VALID_REGIONS, fill_value=0)
+        std_counts = raw_counts.astype(float).div(pd.Series(REGION_SIDO_N))
+        std_pct = (std_counts / std_counts.sum() * 100)
 
+        # 권역 → 시도 확장 테이블
         REGION_TO_SIDO = {
             "서울,인천": ["서울특별시", "인천광역시"],
             "경기,강원": ["경기도", "강원특별자치도"],
             "충청권(충북, 충남, 세종, 대전)": ["충청북도", "충청남도", "세종특별자치시", "대전광역시"],
             "전라권(전북, 전남, 광주)": ["전북특별자치도", "전라남도", "광주광역시"],
-            "경상권(경북, 경남, 부산, 대구, 울산, 제주)": [
-                "경상북도", "경상남도", "부산광역시", "대구광역시", "울산광역시", "제주특별자치도"
-            ],
+            "경상권(경북, 경남, 부산, 대구, 울산, 제주)": ["경상북도", "경상남도", "부산광역시", "대구광역시", "울산광역시", "제주특별자치도"],
         }
 
         expand_rows = []
-        for reg, pct in std_pct2.items():
+        for reg, pct in std_pct.items():
             for s in REGION_TO_SIDO.get(reg, []):
                 expand_rows.append({"시도": s, "표준화비율(%)": pct})
         reg_to_sido_df = pd.DataFrame(expand_rows)
 
+        # ── 3) 병합 & 시각화
         merged = pd.merge(reg_to_sido_df, age_sido, on="시도", how="inner")
         merged = merged.groupby("시도", as_index=False).mean(numeric_only=True)
 
         st.write("미리보기")
         st.dataframe(merged, use_container_width=True)
 
+        # 상관계수
         corr = merged[["표준화비율(%)", "고령인구비율(%)"]].corr().iloc[0, 1]
         st.markdown(f"**상관계수 (권역 표준화비율 vs 시도 고령인구비율)**: `{corr:.2f}`")
 
+        # 산점도 + 회귀선
         sc = alt.Chart(merged).mark_circle(size=120).encode(
             x=alt.X("고령인구비율(%):Q"),
             y=alt.Y("표준화비율(%):Q"),
