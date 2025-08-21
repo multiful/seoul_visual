@@ -27,7 +27,7 @@ def build_region_gdf(geo_path: str) -> gpd.GeoDataFrame:
     시·도 GeoJSON을 읽어 5개 권역으로 dissolve한 GeoDataFrame 반환
     (메인 탭 Plotly Choropleth에서 사용)
     """
-    gdf = gpd.read_file(geo_path)  # CTPRVN_CD, CTP_KOR_NM, geometry 등 포함 가정
+    gdf = gpd.read_file(geo_path)  # must contain: CTPRVN_CD, geometry
 
     # CRS 보정 → EPSG:4326
     try:
@@ -54,22 +54,52 @@ def build_region_gdf(geo_path: str) -> gpd.GeoDataFrame:
     except Exception:
         gdf = gdf.explode()
 
-    # 시도코드 → 권역 매핑
+    # 시도코드 → 권역 매핑 (충청 전부 포함 보장)
     CODE_TO_REGION = {
-        "11": "서울,인천", "28": "서울,인천",
-        "41": "경기,강원", "42": "경기,강원",
-        "43": "충청권(충북, 충남, 세종, 대전)", "44": "충청권(충북, 충남, 세종, 대전)",
-        "36": "충청권(충북, 충남, 세종, 대전)", "30": "충청권(충북, 충남, 세종, 대전)",
-        "45": "전라권(전북, 전남, 광주)", "46": "전라권(전북, 전남, 광주)", "29": "전라권(전북, 전남, 광주)",
-        "47": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "48": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
-        "26": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "27": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
-        "31": "경상권(경북, 경남, 부산, 대구, 울산, 제주)", "50": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
+        # 수도권/인천
+        "11": "서울,인천",  # 서울
+        "28": "서울,인천",  # 인천
+        # 경기·강원
+        "41": "경기,강원",  # 경기
+        "42": "경기,강원",  # 강원특별자치도
+        # 충청권
+        "43": "충청권(충북, 충남, 세종, 대전)",  # 충북
+        "44": "충청권(충북, 충남, 세종, 대전)",  # 충남
+        "30": "충청권(충북, 충남, 세종, 대전)",  # 대전
+        "36": "충청권(충북, 충남, 세종, 대전)",  # 세종
+        # 전라권
+        "45": "전라권(전북, 전남, 광주)",  # 전북특별자치도
+        "46": "전라권(전북, 전남, 광주)",  # 전남
+        "29": "전라권(전북, 전남, 광주)",  # 광주
+        # 경상권(+제주)
+        "47": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",  # 경북
+        "48": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",  # 경남
+        "26": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",  # 부산
+        "27": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",  # 대구
+        "31": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",  # 울산
+        "50": "경상권(경북, 경남, 부산, 대구, 울산, 제주)",  # 제주
     }
     gdf["CTPRVN_CD"] = gdf["CTPRVN_CD"].astype(str).str.strip()
     gdf["권역"] = gdf["CTPRVN_CD"].map(CODE_TO_REGION)
 
-    region_gdf = gdf.dissolve(by="권역", as_index=False)[["권역", "geometry"]]
-    return gpd.GeoDataFrame(region_gdf, geometry="geometry", crs=gdf.crs)
+    # 필수 권역만 남기고 dissolve
+    region_gdf = gdf.dropna(subset=["권역"]).dissolve(by="권역", as_index=False)[["권역", "geometry"]]
+    region_gdf = gpd.GeoDataFrame(region_gdf, geometry="geometry", crs=gdf.crs)
+
+    # 누락 체크(디버그)
+    expected = {
+        "서울,인천",
+        "경기,강원",
+        "충청권(충북, 충남, 세종, 대전)",
+        "전라권(전북, 전남, 광주)",
+        "경상권(경북, 경남, 부산, 대구, 울산, 제주)",
+    }
+    got = set(region_gdf["권역"].unique())
+    missing = expected - got
+    if missing:
+        st.warning(f"지오메트리에서 누락된 권역: {sorted(missing)} — CODE_TO_REGION 또는 원본 GeoJSON을 확인하세요.")
+
+    return region_gdf
 
 # ─────────────────────────────────────────────
 # 데이터 로딩
@@ -151,7 +181,7 @@ with st.sidebar:
     st.caption(f"현재 레코드 수: {len(df):,}")
 
 # ─────────────────────────────────────────────
-# 탭 구성 (지도 탭 제거)
+# 탭 (지도가 메인에 포함됨)
 # ─────────────────────────────────────────────
 tab_main, tab_gender, tab_corr = st.tabs(["메인", "성별 분석", "고령인구비율 상관"])
 
@@ -161,14 +191,16 @@ tab_main, tab_gender, tab_corr = st.tabs(["메인", "성별 분석", "고령인�
 with tab_main:
     st.subheader("권역별 분포 — 시도수 보정(표준화) 기준")
 
-    # 표준화 비율 계산
+    # 표준화 비율 계산 (누락 방지 reindex)
     raw_counts = df["권역"].value_counts().reindex(VALID_REGIONS, fill_value=0)
     std_counts = raw_counts.astype(float).div(pd.Series(REGION_SIDO_N))
     std_pct = (std_counts / std_counts.sum() * 100).round(2)
 
-    plot_df = series_to_df(std_pct, "시도수 보정 비율(%)", "권역").sort_values("시도수 보정 비율(%)", ascending=False)
+    plot_df = (
+        series_to_df(std_pct, "시도수 보정 비율(%)", "권역")
+        .sort_values("시도수 보정 비율(%)", ascending=False)
+    )
 
-    # 레이아웃: 좌(막대) - 우(지도)
     c1, c2 = st.columns([1, 1])
 
     with c1:
@@ -193,6 +225,15 @@ with tab_main:
     with c2:
         try:
             region_gdf = build_region_gdf(geo_path)
+
+            # 지도에 들어있는 권역과 값 테이블 키 일치 여부 확인
+            geo_regions = set(region_gdf["권역"].unique())
+            val_regions = set(plot_df["권역"].unique())
+            if geo_regions - val_regions:
+                st.info(f"값 테이블에 없는 권역이 지오메트리에 있습니다: {sorted(geo_regions - val_regions)}")
+            if val_regions - geo_regions:
+                st.info(f"지오메트리에 없는 권역이 값 테이블에 있습니다: {sorted(val_regions - geo_regions)}")
+
             # 표준화 비율 병합 (권역 키)
             map_df = region_gdf.merge(
                 plot_df.rename(columns={"시도수 보정 비율(%)": "value"}),
@@ -202,6 +243,8 @@ with tab_main:
             # GeoJSON 직렬화 (properties에 '권역' 포함)
             geojson_obj = json.loads(map_df.to_json())
 
+            vmax = float(map_df["value"].max()) if len(map_df) else 0.0
+
             # Plotly Choropleth
             fig_map = px.choropleth(
                 data_frame=map_df.drop(columns=["geometry"]),
@@ -210,8 +253,8 @@ with tab_main:
                 featureidkey="properties.권역",
                 color="value",
                 color_continuous_scale="OrRd",
-                range_color=(0, float(plot_df["value" if "value" in plot_df.columns else "시도수 보정 비율(%)"].max())),
-                labels={"value": "비율(%)"},
+                range_color=(0, vmax if vmax > 0 else 1),
+                labels={"value": "시도수 보정\n비율(%)"},
             )
             fig_map.update_geos(fitbounds="locations", visible=False)
             fig_map.update_layout(
@@ -247,7 +290,6 @@ with tab_gender:
         st.plotly_chart(pie, use_container_width=True)
 
     with c2:
-        # 권역 × 성별 비율(권역 내 정규화)
         cross = (
             df[df["성별_label"].notna()]
             .groupby(["권역", "성별_label"]).size()
@@ -302,7 +344,7 @@ with tab_corr:
             "전라북도": "전북특별자치도"
         })
 
-        # (안전) 권역 표준화 비율 재계산
+        # 권역 표준화 비율 재계산
         raw_counts = df["권역"].value_counts().reindex(VALID_REGIONS, fill_value=0)
         std_counts = raw_counts.astype(float).div(pd.Series(REGION_SIDO_N))
         std_pct = (std_counts / std_counts.sum() * 100)
